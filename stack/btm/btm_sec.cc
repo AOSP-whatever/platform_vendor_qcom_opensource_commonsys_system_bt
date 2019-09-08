@@ -24,6 +24,7 @@
 
 #define LOG_TAG "bt_btm_sec"
 
+#include <log/log.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +43,8 @@
 
 #include "gatt_int.h"
 #include "device/include/device_iot_config.h"
+
+#include "bta/dm/bta_dm_int.h"
 
 #define BTM_SEC_MAX_COLLISION_DELAY (5000)
 
@@ -3125,6 +3128,15 @@ void btm_sec_rmt_name_request_complete(const RawAddress* p_bd_addr,
         /* If it is set, there may be a race condition */
         BTM_TRACE_DEBUG("%s IS_SM4_UNKNOWN Flags:0x%04x", __func__,
                         btm_cb.pairing_flags);
+
+        if ((p_dev_rec->num_read_pages == 0) &&
+            (btm_cb.pairing_flags & BTM_PAIR_FLAGS_WE_STARTED_DD) &&
+            (p_dev_rec->hci_handle != BTM_SEC_INVALID_HANDLE)) {
+          BTM_TRACE_WARNING("%s:RNR done after connection, wait for remote features complete",
+                              __func__);
+          btm_sec_change_pairing_state(BTM_PAIR_STATE_WAIT_PIN_REQ);
+          return;
+        }
         if ((btm_cb.pairing_flags & BTM_PAIR_FLAGS_REJECTED_CONNECT) == 0)
           p_dev_rec->sm4 |= BTM_SM4_KNOWN;
       }
@@ -4723,6 +4735,19 @@ void btm_sec_disconnected(uint16_t handle, uint8_t reason) {
 
   BTM_TRACE_EVENT("%s after update sec_flags=0x%x", __func__,
                   p_dev_rec->sec_flags);
+
+  /* Some devices hardcode sample LTK value from spec, instead of generating
+   * one. Treat such devices as insecure, and remove such bonds on
+   * disconnection.
+   */
+  if (is_sample_ltk(p_dev_rec->ble.keys.pltk)) {
+    android_errorWriteLog(0x534e4554, "128437297");
+    LOG(INFO) << __func__ << " removing bond to device that used sample LTK";
+
+    tBTA_DM_MSG p_data;
+    p_data.remove_dev.bd_addr = p_dev_rec->bd_addr;
+    bta_dm_remove_device(&p_data);
+  }
 
   if (p_dev_rec->sec_state == BTM_SEC_STATE_DISCONNECTING_BOTH) {
     p_dev_rec->sec_state = (transport == BT_TRANSPORT_LE)
